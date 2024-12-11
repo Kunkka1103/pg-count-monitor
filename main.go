@@ -61,6 +61,17 @@ func main() {
 		err := db.QueryRow(query).Scan(&rowCount)
 		if err != nil {
 			log.Printf("Failed to query row count: %v", err)
+			// Push an error value (-1) to Pushgateway
+			rowCountMetric.Set(-1)
+			err = push.New(*pushGateway, *jobName).
+				Collector(rowCountMetric).
+				Grouping("job", *jobName).
+				Push()
+			if err != nil {
+				log.Printf("Failed to push error metric: %v", err)
+			} else {
+				log.Printf("Pushed error metric successfully: %s = -1", *metricName)
+			}
 		} else {
 			// Update the metric
 			rowCountMetric.Set(float64(rowCount))
