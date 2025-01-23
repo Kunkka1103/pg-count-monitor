@@ -5,11 +5,11 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"os"
 	"time"
 
 	_ "github.com/lib/pq"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/push"
 )
 
 func main() {
@@ -18,12 +18,13 @@ func main() {
 	dsn := flag.String("dsn", "", "PostgreSQL DSN")
 	table := flag.String("table", "", "Table name to monitor")
 	metricName := flag.String("metric", "", "Prometheus metric name")
-	pushGateway := flag.String("pushgateway", "", "Pushgateway address")
+	outputDir := flag.String("output-dir", "/opt/node-exporter/prom", "Directory to write Prometheus metric files")
 	jobName := flag.String("job", "postgres_monitor", "Job name for Pushgateway")
+	instance := flag.String("instance", "localhost", "Instance name for Pushgateway")
 	flag.Parse()
 
-	if *dsn == "" || *table == "" || *metricName == "" || *pushGateway == "" {
-		log.Fatal("All parameters (dsn, table, metric, pushgateway) are required.")
+	if *dsn == "" || *table == "" || *metricName == "" || *outputDir == "" || *jobName == "" || *instance == "" {
+		log.Fatal("All parameters  are required.")
 	}
 
 	// Parse the interval
@@ -60,35 +61,41 @@ func main() {
 		query := fmt.Sprintf("SELECT count(*) FROM %s", *table)
 		err := db.QueryRow(query).Scan(&rowCount)
 		if err != nil {
-			log.Printf("Failed to query row count: %v", err)
-			// Push an error value (-1) to Pushgateway
-			rowCountMetric.Set(-1)
-			err = push.New(*pushGateway, *jobName).
-				Collector(rowCountMetric).
-				Grouping("job", *jobName).
-				Push()
-			if err != nil {
-				log.Printf("Failed to push error metric: %v", err)
-			} else {
-				log.Printf("Pushed error metric successfully: %s = -1", *metricName)
-			}
-		} else {
-			// Update the metric
-			rowCountMetric.Set(float64(rowCount))
+			rowCount = -1
+		}
 
-			// Push the metric to Pushgateway
-			err = push.New(*pushGateway, *jobName).
-				Collector(rowCountMetric).
-				Grouping("job", *jobName).
-				Push()
-			if err != nil {
-				log.Printf("Failed to push metrics: %v", err)
-			} else {
-				log.Printf("Pushed metrics successfully: %s = %d", *metricName, rowCount)
-			}
+		// 构建文件路径
+		filePath := fmt.Sprintf("%s/%s.prom", *outputDir, *metricName)
+		log.Printf("正在写入指标数据到 %s/%s.porm", filePath, *metricName)
+
+		// 使用封装好的函数写文件
+		if err := writeToPromFile(filePath, *metricName, *instance, *jobName, rowCount); err != nil {
+			log.Printf("写入文件 %s 时出错: %v", filePath, err)
+		} else {
+			log.Printf("成功写入到 %s", filePath)
 		}
 
 		// Wait for the next interval
 		time.Sleep(duration)
 	}
+}
+
+// 封装好的函数，用于写入 Prometheus 格式的数据到文件
+func writeToPromFile(filePath string, metric string, instance string, job string, value int) error {
+	file, err := os.OpenFile(filePath, os.O_TRUNC|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("无法打开文件 %s: %v", filePath, err)
+	}
+	defer file.Close()
+
+	_, err = fmt.Fprintf(
+		file,
+		"%s{instance=\"%s\",job=\"%s\"} %d\n",
+		metric, instance, job, value,
+	)
+	if err != nil {
+		return fmt.Errorf("写入文件 %s 时发生错误: %v", filePath, err)
+	}
+
+	return nil
 }
